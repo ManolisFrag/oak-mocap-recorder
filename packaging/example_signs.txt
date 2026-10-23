@@ -1,0 +1,4 @@
+# One sign per line. Lines starting with # are ignored.
+ΓΕΙΑ ΣΟΥ
+ΕΥΧΑΡΙΣΤΩ
+ΝΕΡΟ

@@ -1,0 +1,11 @@
+.venv/
+build/
+dist/
+__pycache__/
+*.pyc
+.DS_Store
+release/
+dist-release/
+build-dist/
+.venv-dist/
+signs_list.txt

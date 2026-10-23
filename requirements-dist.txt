@@ -1,0 +1,7 @@
+# Pinned for the shareable build (build_dist.sh): runs on macOS 12+ (Apple Silicon).
+# PySide6 >= 6.10 wheels require macOS 15+, 6.12 requires macOS 26.
+depthai==3.11.0
+PySide6==6.9.3
+av==14.2.0           # newest PyAV with a macOS 12 arm64 wheel
+numpy==2.5.4
+pyinstaller
