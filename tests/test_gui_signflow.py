@@ -91,6 +91,8 @@ def main():
     assert "_pending" in str(cam_dir)
     pump(app, 1.0)
     if SHOTS: dlg.grab().save(str(SHOTS / "3_review.png"))
+    dlg.camera_chosen.emit("front")
+    assert win.cfg["review_camera"] == "front"   # remembered as primary for the next reviews
     dlg._decide(TakeReviewDialog.ACCEPT); pump(app, 0.3)
     final = sess.dir / "001_ΓΕΙΑ_ΣΟΥ"
     files = sorted(p.name for p in (final / f"front_{did}").iterdir())
@@ -108,16 +110,47 @@ def main():
     assert len(list((sess.dir / "_discarded").iterdir())) == 1
     print("discard ok")
 
+    # clock resets once a take is finished
+    win._update_clock()
+    assert win.clock_lbl.text() == "00:00:00", win.clock_lbl.text()
+
+    # filter (case and accent insensitive)
+    win.filter_edit.setText("ψωμί")
+    visible = [win.sign_list.item(r).text() for r in range(win.sign_list.count())
+               if not win.sign_list.item(r).isHidden()]
+    assert len(visible) == 1 and "ΨΩΜΙ" in visible[0], visible
+    win.filter_edit.clear()
+
+    # add a gloss right after the current sign (ΝΕΡΟ) -> becomes current and flashes
+    pump(app, 2.1)
+    win.add_edit.setText("ΝΕΡΟ_2"); win._add_gloss()
+    assert win.signs.signs == ["ΓΕΙΑ ΣΟΥ", "ΝΕΡΟ", "ΝΕΡΟ_2", "ΨΩΜΙ"] and win.signs.current == 2
+    assert win.flash.isVisible() and "ΝΕΡΟ_2" in win.flash.text() and win.add_edit.text() == ""
+    assert win.sign_list.item(2).text().startswith("▶")
+    print("filter / add ok")
+    if SHOTS:
+        win.filter_edit.setText("νερ"); app.processEvents()
+        win.grab().save(str(SHOTS / "5_panel.png")); win.filter_edit.clear()
+
+    # refresh after deleting the accepted take folder by hand
+    import shutil
+    shutil.rmtree(final)
+    win._refresh_from_disk()
+    assert win.signs.status(0) == "pending" and win.sign_list.item(0).text().startswith("·")
+    assert win.signs.current == 2   # current sign unchanged
+    print("refresh ok")
+    pump(app, 2.1)
+
     # interrupt: close window, reopen and resume
     win.workers.clear(); win.close()
     win2 = MainWindow(); win2.discover_timer.stop()
     pump(app, 0.6)
-    assert len(PROMPTS) == 1 and "sign 2 / 3" in PROMPTS[0] and "ΝΕΡΟ" in PROMPTS[0], PROMPTS
+    assert len(PROMPTS) == 1 and "sign 3 / 4" in PROMPTS[0] and "ΝΕΡΟ_2" in PROMPTS[0], PROMPTS
     assert win2.signs is None  # "Not now" keeps free mode
     win2._open_sign_session(str(sess.dir))
-    assert win2.signs.current == 1 and win2.signs.n_accepted == 1
+    assert win2.signs.current == 2 and win2.signs.n_accepted == 0
     items = [win2.sign_list.item(i).text() for i in range(win2.sign_list.count())]
-    assert items[0].startswith("✓") and items[1].startswith("▶"), items
+    assert items[2].startswith("▶") and "ΝΕΡΟ_2" in items[2], items
     if SHOTS:
         pump(app, 2.1); win2.grab().save(str(SHOTS / "4_resumed.png"))
     print("resume ok:", items)

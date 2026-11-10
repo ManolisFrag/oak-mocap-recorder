@@ -74,7 +74,51 @@ def test_session_flow():
         print("session flow ok:", sorted(p.name for p in s2.dir.iterdir()))
 
 
+
+
+def test_add_and_refresh():
+    import shutil
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        lst = root / "list.txt"
+        lst.write_bytes("HOUSE\nΝΕΡΟ\nΨΩΜΙ\n".encode("cp1253"))      # legacy-encoded list
+        s, _ = SignSession.create(root / "rec", "P01", lst)
+        t = s.pending_take_dir(0); _fake_take(t, s.file_tag(0)); s.accept(0, t)   # HOUSE recorded
+        s.current = 0
+
+        # add HOUSE_2 right after HOUSE; it becomes current; folder numbers unchanged
+        i = s.add_sign("HOUSE_2")
+        assert i == 1 and s.current == 1 and s.signs == ["HOUSE", "HOUSE_2", "ΝΕΡΟ", "ΨΩΜΙ"]
+        assert s.folder(1) == "004_HOUSE_2" and s.folder(2) == "002_ΝΕΡΟ"
+        assert (s.dir / "signs.txt").read_text(encoding="utf-8").splitlines()[-1] == "HOUSE_2"
+        try:
+            s.add_sign("house"); raise AssertionError("duplicate accepted")
+        except ValueError:
+            pass
+        assert s.suggest_name("HOUSE") == "HOUSE_3"
+        t = s.pending_take_dir(1); _fake_take(t, s.file_tag(1)); s.accept(1, t)
+
+        # user deletes 001_HOUSE and 004_HOUSE_2, adds a line to signs.txt, restores nothing
+        shutil.rmtree(s.dir / "001_HOUSE"); shutil.rmtree(s.dir / "004_HOUSE_2")
+        with open(s.dir / "signs.txt", "a", encoding="utf-8") as f:
+            f.write("ΣΠΙΤΙ\n")
+        rep = s.refresh()
+        assert rep == {"unmarked": ["HOUSE"], "removed": ["HOUSE_2"], "marked": [], "added": ["ΣΠΙΤΙ"]}, rep
+        assert s.signs == ["HOUSE", "ΝΕΡΟ", "ΨΩΜΙ", "ΣΠΙΤΙ"] and s.status(0) == "pending"
+        assert s.folder(3) == "005_ΣΠΙΤΙ"
+        assert "HOUSE_2" not in (s.dir / "signs.txt").read_text(encoding="utf-8")
+        # a second refresh changes nothing (signs.txt and list agree)
+        assert s.refresh() == {"unmarked": [], "removed": [], "marked": [], "added": []}
+        # a folder restored by hand is picked up as recorded
+        (s.dir / "002_ΝΕΡΟ").mkdir()
+        assert s.refresh()["marked"] == ["ΝΕΡΟ"] and s.status(1) == "accepted"
+        s2 = SignSession.open(s.dir)
+        assert s2.signs == s.signs
+        print("add / refresh ok:", s.signs)
+
+
 if __name__ == "__main__":
     test_parse_and_names()
     test_session_flow()
+    test_add_and_refresh()
     print("ALL OK")

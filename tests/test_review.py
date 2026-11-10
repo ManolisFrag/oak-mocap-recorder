@@ -59,7 +59,35 @@ def test_dialog():
         print("dialog ok")
 
 
+def test_camera_buttons():
+    from PySide6.QtGui import QKeyEvent
+    from PySide6.QtCore import Qt, QEvent
+    app = QApplication.instance() or QApplication([])
+    with tempfile.TemporaryDirectory() as d:
+        cams = []
+        for name in ("front", "left", "right"):
+            start = make_take(Path(d) / f"{name}_1844")
+            cams.append((name, Path(d) / f"{name}_1844"))
+        dlg = TakeReviewDialog(None, "ΓΕΙΑ", "Sign 1 / 3", cams, start, 1.0, [], primary="right")
+        chosen = []
+        dlg.camera_chosen.connect(chosen.append)
+        dlg.show()
+        assert [b.text() for b in dlg.cam_buttons] == ["front  (1)", "left  (2)", "right  (3)"]
+        assert dlg.cam_buttons[2].isChecked() and dlg._current == 2, "primary camera must open first"
+        dlg.cam_buttons[1].click(); app.processEvents()
+        assert dlg._current == 1 and chosen == ["left"]
+        dlg._choose(0); app.processEvents()
+        assert dlg._current == 0 and dlg.cam_buttons[0].isChecked() and chosen == ["left", "front"]
+        t = time.time()
+        while time.time() - t < 0.8:
+            app.processEvents(); time.sleep(0.02)
+        assert not dlg.view.pixmap().isNull()
+        dlg._decide(TakeReviewDialog.DISCARD)
+        print("camera buttons ok: primary opens first, switching reports the new primary")
+
+
 if __name__ == "__main__":
     test_player()
     test_dialog()
+    test_camera_buttons()
     print("ALL OK")

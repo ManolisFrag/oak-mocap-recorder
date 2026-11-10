@@ -10,7 +10,7 @@ from pathlib import Path
 import av
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QImage, QKeySequence, QPixmap, QShortcut
-from PySide6.QtWidgets import (QComboBox, QDialog, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
+from PySide6.QtWidgets import (QButtonGroup, QDialog, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
                                QVBoxLayout)
 
 MAX_W = 960
@@ -97,14 +97,16 @@ class TakeReviewDialog(QDialog):
     ACCEPT, DISCARD = 1, 2
     _frame = Signal(QImage, float)
     _error = Signal(str)
+    camera_chosen = Signal(str)   # name of the camera the user switched to (the new primary)
 
     def __init__(self, parent, sign: str, title: str, cameras: list[tuple[str, Path]],
-                 start_us: int, duration_s: float, warnings: list[str]):
+                 start_us: int, duration_s: float, warnings: list[str], primary: str | None = None):
         super().__init__(parent)
         self.setWindowTitle(f"Review take — {sign}")
         self.setWindowModality(Qt.WindowModal)
         self.decision = 0
         self._player: _Player | None = None
+        self._current = -1
         self.start_us = start_us
         self.cameras = [(n, d, find_video(d)) for n, d in cameras]
         self.cameras = [c for c in self.cameras if c[2] is not None]
@@ -115,10 +117,21 @@ class TakeReviewDialog(QDialog):
         lay.addWidget(head)
         row = QHBoxLayout()
         row.addWidget(QLabel("Camera:"))
-        self.cam_cb = QComboBox()
-        self.cam_cb.addItems([n for n, _, _ in self.cameras])
-        self.cam_cb.currentIndexChanged.connect(self._play)
-        row.addWidget(self.cam_cb)
+        self.cam_group = QButtonGroup(self)
+        self.cam_group.setExclusive(True)
+        self.cam_buttons: list[QPushButton] = []
+        for k, (name, _, _) in enumerate(self.cameras):
+            b = QPushButton(f"{name}  ({k + 1})" if len(self.cameras) > 1 else name)
+            b.setCheckable(True)
+            b.setMinimumHeight(30)
+            b.setToolTip(f"Play {name} (key {k + 1}). The chosen camera opens first in the next reviews.")
+            b.setStyleSheet("QPushButton { padding: 0 14px; border-radius: 6px; border: 1px solid #888; }"
+                            "QPushButton:checked { background: #0a84ff; color: white; border-color: #0a84ff; }")
+            self.cam_group.addButton(b, k)
+            self.cam_buttons.append(b)
+            row.addWidget(b)
+            QShortcut(QKeySequence(str(k + 1)), self, activated=lambda k=k: self._choose(k))
+        self.cam_group.idClicked.connect(self._choose)
         row.addStretch(1)
         self.time_lbl = QLabel("")
         self.time_lbl.setFont(QFont("Menlo", 13))
@@ -162,11 +175,24 @@ class TakeReviewDialog(QDialog):
         self._error.connect(lambda m: self.view.setText(f"Cannot play this take: {m}"))
         self.resize(1000, 720)
         if self.cameras:
-            self._play(0)
+            names = [n for n, _, _ in self.cameras]
+            start = names.index(primary) if primary in names else 0
+            self.cam_buttons[start].setChecked(True)
+            self._play(start)
         else:
             self.view.setText("No video was recorded for this take (RGB and mono streams disabled?).")
 
+    def _choose(self, idx: int):
+        if not (0 <= idx < len(self.cameras)) or self.decision:
+            return
+        self.cam_buttons[idx].setChecked(True)
+        if self._current == idx:
+            return
+        self._play(idx)
+        self.camera_chosen.emit(self.cameras[idx][0])
+
     def _play(self, idx: int):
+        self._current = idx
         if self._player:
             self._player.stop()
         if not self.cameras:

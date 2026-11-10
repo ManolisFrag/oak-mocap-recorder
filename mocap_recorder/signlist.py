@@ -34,16 +34,26 @@ def safe_filename(name: str, max_len: int = 80) -> str:
     return s[:max_len].rstrip("._") or "sign"
 
 
-def parse_sign_file(path: Path) -> tuple[list[str], list[str]]:
-    """One sign per line; blank lines and '#' comments ignored; duplicates get _2, _3."""
+def _read_text(path: Path) -> tuple[str, str]:
     raw = Path(path).read_bytes()
-    warnings = []
     for enc in ("utf-8-sig", "cp1253", "latin-1"):
         try:
-            text = raw.decode(enc)
-            break
+            return raw.decode(enc), enc
         except UnicodeDecodeError:
             continue
+    return raw.decode("latin-1", "replace"), "latin-1"
+
+
+def gloss_key(name: str) -> str:
+    """Search key: case- and accent-insensitive (ΣΠΊΤΙ matches σπιτι). Used by the list filter."""
+    d = unicodedata.normalize("NFD", name.strip())
+    return "".join(c for c in d if unicodedata.category(c) != "Mn").casefold()
+
+
+def parse_sign_file(path: Path) -> tuple[list[str], list[str]]:
+    """One sign per line; blank lines and '#' comments ignored; duplicates get _2, _3."""
+    warnings = []
+    text, enc = _read_text(path)
     if enc != "utf-8-sig":
         warnings.append(f"File is not UTF-8; read it as {enc}. Check that the sign names look right.")
     signs, seen = [], {}
@@ -176,6 +186,105 @@ class SignSession:
         return None
 
     # ---- take handling ----------------------------------------------------
+    # ---- editing the list ---------------------------------------------------
+    def find(self, name: str) -> int | None:
+        """Index of a gloss, ignoring case only (accents can distinguish glosses)."""
+        key = unicodedata.normalize("NFC", name.strip()).casefold()
+        return next((i for i, s in enumerate(self.data["signs"])
+                     if unicodedata.normalize("NFC", s["name"]).casefold() == key), None)
+
+    def suggest_name(self, name: str) -> str:
+        """First free variant: HOUSE -> HOUSE_2 -> HOUSE_3 …"""
+        base = re.sub(r"_\d+$", "", name.strip())
+        k = 2
+        while self.find(f"{base}_{k}") is not None:
+            k += 1
+        return f"{base}_{k}"
+
+    def _new_entry(self, name: str, added: bool) -> dict:
+        nums = [int(m.group(1)) for s in self.data["signs"] if (m := re.match(r"(\d+)_", s["folder"]))]
+        width = len(self.data["signs"][0]["folder"].split("_")[0]) if self.data["signs"] else 3
+        # numbers are never reused, even if a hand-added gloss was removed again
+        num = max(max(nums, default=0), self.data.get("last_number", 0)) + 1
+        self.data["last_number"] = num
+        entry = {"name": name, "folder": f"{num:0{width}d}_{safe_filename(name)}",
+                 "status": "pending", "attempts": 0, "accepted_at": None}
+        if added:
+            entry.update({"added": True, "added_at": datetime.now().isoformat(timespec="seconds")})
+        return entry
+
+    def _signs_txt_lines(self) -> list[str]:
+        p = self.dir / "signs.txt"
+        return _read_text(p)[0].splitlines() if p.exists() else []
+
+    def _write_signs_txt(self, lines: list[str]):
+        tmp = self.dir / "signs.txt.tmp"
+        tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")   # always rewritten as UTF-8
+        tmp.replace(self.dir / "signs.txt")
+
+    def add_sign(self, name: str, after: int | None = None) -> int:
+        """Insert a new gloss after index `after` (default: the current sign) and make it current.
+        Existing folder numbers never change; the new one gets the next free number."""
+        name = unicodedata.normalize("NFC", name.strip())
+        if not name or name.startswith("#"):
+            raise ValueError("Type a gloss first.")
+        if self.find(name) is not None:
+            raise ValueError(f"'{name}' is already in the list.")
+        pos = (self.current if after is None else after) + 1
+        self.data["signs"].insert(pos, self._new_entry(name, added=True))
+        self.data["current"] = pos
+        self._write_signs_txt(self._signs_txt_lines() + [name])
+        self.save()
+        return pos
+
+    def refresh(self) -> dict:
+        """Re-sync with the disk after manual changes. Returns what changed:
+        unmarked: take folder deleted -> not recorded again   (hand-added glosses are removed instead)
+        marked:   folder present but not marked recorded (e.g. restored from _discarded)
+        added:    new lines found in signs.txt (appended at the end)"""
+        report = {"unmarked": [], "removed": [], "marked": [], "added": []}
+        cur_folder = self.folder(self.current) if len(self) else None
+        txt = self._signs_txt_lines()
+        keep = []
+        for s in self.data["signs"]:
+            exists = (self.dir / s["folder"]).is_dir()
+            if s["status"] == "accepted" and not exists:
+                if s.get("added"):
+                    report["removed"].append(s["name"])
+                    for k in range(len(txt) - 1, -1, -1):        # drop its line from signs.txt
+                        if unicodedata.normalize("NFC", txt[k].strip()) == s["name"]:
+                            del txt[k]
+                            break
+                    continue
+                s["status"], s["accepted_at"] = "pending", None
+                report["unmarked"].append(s["name"])
+            elif s["status"] != "accepted" and exists:
+                s["status"] = "accepted"
+                s["accepted_at"] = s.get("accepted_at") or datetime.now().isoformat(timespec="seconds")
+                report["marked"].append(s["name"])
+            keep.append(s)
+        self.data["signs"] = keep
+        if report["removed"]:
+            self._write_signs_txt(txt)
+        # new lines typed into signs.txt
+        if (self.dir / "signs.txt").exists():
+            listed, _ = parse_sign_file(self.dir / "signs.txt")
+            for name in listed:
+                if self.find(name) is None:
+                    self.data["signs"].append(self._new_entry(name, added=False))
+                    report["added"].append(name)
+        # keep the same current sign if it still exists
+        idx = next((i for i, s in enumerate(self.data["signs"]) if s["folder"] == cur_folder), None)
+        if idx is None:
+            idx = min(self.current, len(self) - 1) if len(self) else 0
+        self.data["current"] = max(idx, 0)
+        if len(self) and self.status(self.current) == "accepted" and report["unmarked"] + report["removed"]:
+            nxt = self.next_pending(self.current - 1 if self.current else len(self) - 1)
+            if nxt is not None:
+                self.data["current"] = nxt
+        self.save()
+        return report
+
     def pending_take_dir(self, i: int) -> Path:
         stamp = datetime.now().strftime("%H%M%S")
         return _unique(self.dir / PENDING_DIR / f"{self.folder(i)}_{stamp}")

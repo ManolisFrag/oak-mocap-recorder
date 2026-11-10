@@ -38,10 +38,16 @@ RECORDING A SIGN LIST
 2. Sign list > "Load list…", choose the file, and enter the participant ID.
 3. The sign appears in large letters. Press Record (Space), let the person sign,
    then press Stop (Space).
-4. A preview of the take plays:
+4. A preview of the take plays. Click a camera button (or press 1, 2 or 3) to
+   change camera; the app remembers your choice for the next takes.
    Accept (Enter)     = keep it and move to the next sign
    Discard (Backspace) = record the same sign again
 5. To redo a sign later, double-click it in the list.
+   - To record an extra gloss (e.g. HOUSE_2), type it in the box under the list
+     and press Enter. It becomes the next sign to record.
+   - To find a gloss, type part of it in the filter box above the list.
+   - If you delete a take's folder in Finder, click "Refresh": that sign shows
+     as not recorded again.
 6. If you quit halfway, the app offers to continue where you stopped the next
    time it opens. "Clear list" ends the session. Recordings are never deleted.
 

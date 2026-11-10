@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, 
 from . import __version__
 from .devices import camera_name, discover_devices, load_config, safe_name, save_config
 from .review import TakeReviewDialog
-from .signlist import PROGRESS_FILE, SignSession
+from .signlist import PROGRESS_FILE, SignSession, gloss_key
 from .settings import (ANTI_BANDING, CODECS, DEPTH_PRESETS, FPS_OPTIONS, MONO_RESOLUTIONS, RGB_RESOLUTIONS,
                        SETTINGS_VERSION, STREAMS, Settings)
 from .worker import worker_main
@@ -456,23 +456,53 @@ class MainWindow(QMainWindow):
         self.sign_progress = QLabel("No list loaded — free recording mode")
         self.sign_progress.setWordWrap(True)
         v.addWidget(self.sign_progress)
+        self.list_tools = QWidget()
+        tools = QHBoxLayout(self.list_tools)
+        tools.setContentsMargins(0, 0, 0, 0)
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setPlaceholderText("🔍 Filter glosses…")
+        self.filter_edit.setClearButtonEnabled(True)
+        self.filter_edit.setToolTip("Show only glosses containing this text (case and accents ignored)")
+        self.filter_edit.textChanged.connect(self._apply_filter)
+        self.refresh_btn = QPushButton("⟳ Refresh")
+        self.refresh_btn.setToolTip("Re-read the session folder: deleted take folders become 'not recorded', "
+                                    "new lines in signs.txt are added")
+        self.refresh_btn.clicked.connect(self._refresh_from_disk)
+        tools.addWidget(self.filter_edit, 1)
+        tools.addWidget(self.refresh_btn)
+        v.addWidget(self.list_tools)
         self.sign_list = QListWidget()
         self.sign_list.setMinimumHeight(220)
         self.sign_list.setToolTip("Double-click a sign to record (or re-record) it")
         self.sign_list.itemDoubleClicked.connect(self._jump_to_sign)
-        self.sign_list.hide()
         v.addWidget(self.sign_list)
+        self.add_row = QWidget()
+        add = QHBoxLayout(self.add_row)
+        add.setContentsMargins(0, 0, 0, 0)
+        self.add_edit = QLineEdit()
+        self.add_edit.setPlaceholderText("New gloss, e.g. HOUSE_2")
+        self.add_edit.setToolTip("Adds the gloss right after the current sign and makes it the next to record")
+        self.add_edit.returnPressed.connect(self._add_gloss)
+        self.add_btn = QPushButton("+ Add")
+        self.add_btn.clicked.connect(self._add_gloss)
+        add.addWidget(self.add_edit, 1)
+        add.addWidget(self.add_btn)
+        v.addWidget(self.add_row)
+        for w in (self.list_tools, self.sign_list, self.add_row):
+            w.hide()
         return g
 
     def _refresh_sign_ui(self):
         sess = self.signs
         sign_mode = sess is not None
-        self.sign_list.setVisible(sign_mode)
+        for w in (self.list_tools, self.sign_list, self.add_row):
+            w.setVisible(sign_mode)
         self.clear_list_btn.setEnabled(sign_mode)
         self.banner.setVisible(sign_mode)
         self.trial_lbl.setText("Participant:" if sign_mode else "Trial:")
         self.trial_edit.setReadOnly(sign_mode)
         if not sign_mode:
+            self.filter_edit.clear()
             self.sign_progress.setText("No list loaded — free recording mode")
             self.trial_edit.setText(self.cfg.get("trial", ""))
             self.sign_list.clear()
@@ -486,12 +516,16 @@ class MainWindow(QMainWindow):
             current = i == sess.current and not sess.complete
             mark = "▶" if current else ("✓" if accepted else "·")
             item = QListWidgetItem(f"{mark}  {i + 1:>3}  {name}")
+            item.setData(Qt.UserRole, i)
+            if sess.data["signs"][i].get("added"):
+                item.setToolTip("Added during the session")
             if accepted:
                 item.setForeground(Qt.darkGreen)
             if current:
                 f = item.font(); f.setBold(True); item.setFont(f)
             self.sign_list.addItem(item)
         self.sign_list.setCurrentRow(sess.current)
+        self._apply_filter()
         self.sign_list.scrollToItem(self.sign_list.item(sess.current), QListWidget.PositionAtCenter)
         if sess.complete:
             self.banner.setText(f"✓ All {len(sess)} signs recorded — clear the list for a new session, "
@@ -554,6 +588,8 @@ class MainWindow(QMainWindow):
             b.setEnabled(idle)
         self.clear_list_btn.setEnabled(idle and self.signs is not None)
         self.sign_list.setEnabled(idle)
+        for w in (self.refresh_btn, self.add_edit, self.add_btn):
+            w.setEnabled(idle and self.signs is not None)
 
     def _set_sign_session(self, sess: SignSession | None):
         self.signs = sess
@@ -658,7 +694,7 @@ class MainWindow(QMainWindow):
         sess = self.signs
         if sess is None or self.recording or self._reviewing:
             return
-        i = self.sign_list.row(item)
+        i = item.data(Qt.UserRole)
         if sess.status(i) == "accepted":
             if QMessageBox.question(self, "Re-record sign?",
                                     f"'{sess.name(i)}' is already recorded. Record it again?\n"
@@ -669,6 +705,77 @@ class MainWindow(QMainWindow):
         self._refresh_sign_ui()
         self._update_rec_enabled()
         self._flash_current()
+
+    def _apply_filter(self, *_):
+        key = gloss_key(self.filter_edit.text())
+        shown = 0
+        for r in range(self.sign_list.count()):
+            item = self.sign_list.item(r)
+            name = self.signs.name(item.data(Qt.UserRole)) if self.signs else ""
+            hide = bool(key) and key not in gloss_key(name)
+            item.setHidden(hide)
+            shown += not hide
+        if key and self.signs is not None:
+            self.sign_progress.setText(f"<b>{self.signs.participant or 'session'}</b> — {self.signs.progress_text}"
+                                       f" — <span style='color:#0a84ff'>showing {shown} matching "
+                                       f"“{self.filter_edit.text()}”</span><br>"
+                                       f"<span style='color:#888'>{self.signs.dir}</span>")
+        elif self.signs is not None:
+            self.sign_progress.setText(f"<b>{self.signs.participant or 'session'}</b> — {self.signs.progress_text}"
+                                       f"<br><span style='color:#888'>{self.signs.dir}</span>")
+
+    def _add_gloss(self):
+        sess = self.signs
+        if sess is None or self.recording or self._reviewing:
+            return
+        name = self.add_edit.text().strip()
+        if not name:
+            self.add_edit.setFocus()
+            return
+        existing = sess.find(name)
+        if existing is not None:
+            alt = sess.suggest_name(name)
+            if QMessageBox.question(self, "Gloss already in the list",
+                                    f"'{sess.name(existing)}' is already in the list.\nAdd it as '{alt}' instead?"
+                                    ) != QMessageBox.Yes:
+                return
+            name = alt
+        try:
+            i = sess.add_sign(name)
+        except Exception as e:
+            QMessageBox.warning(self, "Cannot add gloss", str(e))
+            return
+        self.add_edit.clear()
+        self.filter_edit.clear()
+        self.log_msg(f"Added gloss '{name}' as sign {i + 1} (folder {sess.folder(i)})")
+        self._refresh_sign_ui()
+        self._update_rec_enabled()
+        self._flash_current()
+
+    def _refresh_from_disk(self):
+        sess = self.signs
+        if sess is None or self.recording or self._reviewing:
+            return
+        try:
+            rep = sess.refresh()
+        except Exception as e:
+            QMessageBox.warning(self, "Refresh failed", str(e))
+            return
+        lines = []
+        if rep["unmarked"]:
+            lines.append("Not recorded any more (folder deleted): " + ", ".join(rep["unmarked"]))
+        if rep["removed"]:
+            lines.append("Removed from the list (added glosses, folder deleted): " + ", ".join(rep["removed"]))
+        if rep["marked"]:
+            lines.append("Marked as recorded (folder found): " + ", ".join(rep["marked"]))
+        if rep["added"]:
+            lines.append("Added from signs.txt: " + ", ".join(rep["added"]))
+        for l in lines:
+            self.log_msg(l, "warn")
+        if not lines:
+            self.log_msg("Refresh: the list already matches the session folder")
+        self._refresh_sign_ui()
+        self._update_rec_enabled()
 
     def _review_take(self, s: dict):
         sess = self.signs
@@ -686,11 +793,18 @@ class MainWindow(QMainWindow):
             warnings.append("not recorded by: " + ", ".join(missing))
         cams = [(name, Path(info["dir"])) for name, info in sorted(s["cameras"].items()) if info.get("dir")]
         dlg = TakeReviewDialog(self, sess.name(i), f"Sign {i + 1} / {len(sess)}", cams,
-                               s["start_us"], s["duration_s"], warnings)
+                               s["start_us"], s["duration_s"], warnings,
+                               primary=self.cfg.get("review_camera"))
+        dlg.camera_chosen.connect(self._remember_review_camera)
         dlg.finished.connect(lambda result: self._review_done(result, s))
         self._reviewing = True
         self._update_rec_enabled()
         dlg.open()
+
+    def _remember_review_camera(self, name: str):
+        if self.cfg.get("review_camera") != name:
+            self.cfg["review_camera"] = name
+            self._save_cfg()
 
     def _review_done(self, result: int, s: dict):
         sess = self.signs
@@ -1108,6 +1222,7 @@ class MainWindow(QMainWindow):
             self.clock_lbl.setText(f"{t // 3600:02d}:{t // 60 % 60:02d}:{t % 60:02d}")
             self.clock_lbl.setStyleSheet("color: #ff3b30;")
         elif not self.recording:
+            self.clock_lbl.setText("00:00:00")
             self.clock_lbl.setStyleSheet("")
 
     # ------------------------------------------------------------------ shutdown

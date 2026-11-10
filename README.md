@@ -52,16 +52,24 @@ it is close to the limits of a shared hub or a smaller MacBook; the panel warns 
    `<Save to>/<participant>_<date_time>/` is created.
 3. The current sign **flashes** over the camera view for 2 s, then stays in the banner above it.
    Press **Record**/Space, sign, then press **Stop**/Space.
-4. A **review window** loops the take, starting from the moment Record was pressed. You can pick the camera, and any dropped frames
-   or disconnects are listed.
+4. A **review window** loops the take, starting from the moment Record was pressed. The camera buttons (or keys 1/2/3)
+   switch cameras, and the one you pick opens first in later reviews. Any dropped frames or disconnects are listed.
    * **Accept** (↩): the take is saved as `NNN_<sign>/` and the next sign flashes.
    * **Discard** (⌫): the take is moved to `_discarded/` and the same sign flashes again.
 5. **Double-click** any sign in the list to record it again. The old take is moved to `_discarded/` only when the new one
    is accepted.
-6. If the app is closed or crashes, it offers to **resume** at the next unrecorded sign on the next launch.
+6. **Add a gloss on the spot:** type it under the list (e.g. `HOUSE_2`) and press Enter or **+ Add**. It is inserted
+   right after the current sign and becomes the next one to record. It's saved in the session (`progress.json` and
+   `signs.txt`). Existing folder numbers never change; the new gloss gets the next free number.
+7. **Filter:** type in the box above the list to show only matching glosses (case and accents are ignored).
+8. **⟳ Refresh** re-reads the session folder after manual changes:
+   * a take folder you deleted → that sign shows as not recorded again (glosses added by hand are removed instead)
+   * a folder you restored (e.g. from `_discarded/`) → marked as recorded
+   * new lines typed into the session's `signs.txt` → added to the end of the list
+9. If the app is closed or crashes, it offers to **resume** at the next unrecorded sign on the next launch.
    **Open session…** resumes any earlier session folder.
    A take that was waiting for review is moved to `_discarded/`.
-7. **Clear list** ends the session (all files are kept) and returns to free recording.
+10. **Clear list** ends the session (all files are kept) and returns to free recording.
 
 ```
 <participant>_<date_time>/
@@ -96,6 +104,16 @@ it is close to the limits of a shared hub or a smaller MacBook; the panel warns 
   or 640×360 above 30 fps or with 640×400 mono sensors, so that lossless encoding keeps up.
 * After a disconnect, the camera continues into `*_part2.*` files and the gap is logged in `session.json`.
 
+### Viewing depth
+`depth.mkv` holds raw millimetres, so a video player shows it almost black. To watch it, make a preview:
+```zsh
+.venv/bin/python tools/view_depth.py "<session>/001_<sign>/<camera>_<serial>"
+```
+This writes `…_depth_preview.mp4` next to the data: RGB on the left and depth on the right
+(red = near, blue = far, black = no depth). Frames are matched by timestamp. Use `--near 600 --far 2500` to fix the
+colour range in mm (the default is automatic) and `--no-rgb` for depth only. The preview is lossy and for viewing only;
+`depth.mkv` is unchanged.
+
 ### MediaPipe + depth example
 ```python
 import cv2, mediapipe as mp
@@ -119,6 +137,7 @@ Note: rgb.mp4 and depth.mkv start at different frames (because of the pre-roll),
 .venv/bin/python tests/test_preview_nv12.py     # preview colour conversion
 .venv/bin/python tests/test_restart_nofreeze.py # Apply / cameras on-off never block the window
 .venv/bin/python tests/test_settings_defaults.py # recommended defaults, warnings, one-time prompt
+.venv/bin/python tests/test_view_depth.py       # depth preview colours
 "dist/OAK Mocap Recorder.app/Contents/MacOS/OAK Mocap Recorder" --selftest
 ```
 
