@@ -51,6 +51,16 @@ RECORDING A SIGN LIST
 6. If you quit halfway, the app offers to continue where you stopped the next
    time it opens. "Clear list" ends the session. Recordings are never deleted.
 
+SHOWING THE SIGN TO THE SIGNER (second screen)
+1. Connect a second display or TV and set it to "extend" (System Settings >
+   Displays), not "mirror".
+2. In the app, tick "Show gloss and reference media on the second screen".
+3. Optional: put a picture or video for each gloss in a folder named "media"
+   next to your list file, named after the gloss (HOUSE.mp4, NERO.jpg).
+   It is found automatically, or choose it with "Media folder…".
+The signer sees the gloss and its picture/video, then a 3-2-1 countdown, then
+only the gloss while recording. The countdown length can be changed (0 = off).
+
 WHERE THE FILES GO
 <chosen folder>/<participant>_<date_time>/001_<sign>/<camera>_<serial>/
   <sign>_<camera>_rgb.mp4      colour video

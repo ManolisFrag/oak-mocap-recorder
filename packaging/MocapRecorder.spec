@@ -26,7 +26,7 @@ app = BUNDLE(
     name="OAK Mocap Recorder.app",
     bundle_identifier="org.mocap.oakrecorder",
     info_plist={
-        "CFBundleShortVersionString": "0.3.0",
+        "CFBundleShortVersionString": "0.4.0",
         "NSHighResolutionCapable": True,
         "LSMinimumSystemVersion": "12.0",
     },

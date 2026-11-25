@@ -17,6 +17,8 @@ QMessageBox.exec = lambda self: PROMPTS.append(self.text()) or 0   # resume prom
 from mocap_recorder.review import TakeReviewDialog
 from mocap_recorder.signlist import SignSession
 from test_review import make_take
+from test_media import make_image
+from mocap_recorder.participant import ParticipantWindow
 
 SHOTS = Path(sys.argv[1]) if len(sys.argv) > 1 else None
 
@@ -39,7 +41,14 @@ def pump(app, secs):
 def take(app, win, did):
     """Press record, act as the worker, press stop; returns the open review dialog."""
     win.toggle_recording()
+    if win._countdown:
+        assert win.rec_btn.text().startswith("✕ Cancel") and not win.recording
+        if win.participant: assert win.participant.state == "countdown"
+        t = time.time()
+        while not win.recording and time.time() - t < 3:
+            pump(app, 0.05)
     assert win.recording, "recording did not start"
+    if win.participant: assert win.participant.state == "recording"
     cmd, arg = win.workers[did]["cmd_q"].get_nowait()
     while cmd != "record":  # skip the previous take's "stop"
         cmd, arg = win.workers[did]["cmd_q"].get_nowait()
@@ -56,6 +65,7 @@ def take(app, win, did):
     win.toggle_recording()  # stop
     win._handle_event(did, "stopped", {"dir": str(cam_dir), "written": {"rgb": 45}, "dropped": {"rgb": 2}})
     pump(app, 0.3)
+    if win.participant: assert win.participant.state == "wait"
     dlg = next(w for w in app.topLevelWidgets() if isinstance(w, TakeReviewDialog) and w.isVisible())
     # the take's real start_us is the GUI's; override the video timing for playback only
     dlg.start_us = 0
@@ -67,6 +77,8 @@ def main():
     root = Path(tempfile.mkdtemp())
     lst = root / "signs.txt"
     lst.write_text("ΓΕΙΑ ΣΟΥ\nΝΕΡΟ\nΨΩΜΙ\n", encoding="utf-8")
+    (root / "media").mkdir()
+    make_image(root / "media" / "ΓΕΙΑ ΣΟΥ.png"); make_image(root / "media" / "ΝΕΡΟ.png")
 
     win = MainWindow(); win.show(); win.resize(1400, 850)
     win.folder_edit.setText(str(root / "rec"))
@@ -78,8 +90,14 @@ def main():
     win.discover_timer.stop()
 
     sess, _ = SignSession.create(root / "rec", "P01", lst)
+    assert sess.media_dir == root / "media" and sess.n_with_media == 2       # found next to the list
+    win._update_screens = lambda: None     # no real second display offscreen: attach the window directly
+    win.participant = ParticipantWindow(); win.participant.resize(1280, 720); win.participant.show()
+    win.countdown_spin.setValue(1)
     win._set_sign_session(sess)
     pump(app, 0.2)
+    assert win.sign_list.item(0).text().endswith("🖼") and not win.sign_list.item(2).text().endswith("🖼")
+    assert win.participant.state == "sign" and win.participant.media_path.name == "ΓΕΙΑ ΣΟΥ.png"
     assert win.flash.isVisible() and "ΓΕΙΑ ΣΟΥ" in win.flash.text() and not win.rec_btn.isEnabled()
     if SHOTS: win.grab().save(str(SHOTS / "1_flash.png"))
     pump(app, 2.1)
@@ -99,11 +117,21 @@ def main():
     assert "ΓΕΙΑ_ΣΟΥ_front_rgb.mp4" in files, files
     tj = json.loads((final / "take.json").read_text(encoding="utf-8"))
     assert tj["sign"] == "ΓΕΙΑ ΣΟΥ" and "_pending" not in json.dumps(tj, ensure_ascii=False), tj
+    assert tj["reference_media"].endswith("ΓΕΙΑ ΣΟΥ.png"), tj.get("reference_media")
+    assert win.participant.state == "sign" and win.participant.media_path.name == "ΝΕΡΟ.png"
     assert win.signs.current == 1 and win.flash.isVisible() and "ΝΕΡΟ" in win.flash.text()
     print("accept ok:", files)
 
-    # sign 2: record -> discard -> same sign flashed again
+    # countdown can be cancelled with a second press
     pump(app, 2.1)
+    win.countdown_spin.setValue(2)
+    win.toggle_recording(); assert win._countdown == 2 and not win.recording
+    win.toggle_recording(); assert win._countdown == 0 and not win.recording
+    assert win.participant.state == "sign" and not win.flash.isVisible()
+    win.countdown_spin.setValue(0)
+    print("countdown + participant screen ok")
+
+    # sign 2: record -> discard -> same sign flashed again
     dlg, _ = take(app, win, did)
     dlg._decide(TakeReviewDialog.DISCARD); pump(app, 0.3)
     assert win.signs.current == 1 and "ΝΕΡΟ" in win.flash.text()

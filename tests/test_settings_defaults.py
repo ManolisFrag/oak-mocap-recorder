@@ -48,6 +48,8 @@ def test_prompt():
         return w
     w = run_window()
     assert len(asked) == 1 and "640x400" in asked[0], asked
+    # offscreen there is a single display: participant screen unavailable, with an explanation
+    assert not w.part_chk.isEnabled() and "second display" in w.part_status.text() and w.participant is None
     assert w.settings.mono_resolution == "640x400" and w.settings.ir_dot_intensity == 0.3
     assert w.mono_cb.currentText() == "640x400" and w.flicker_cb.currentText().startswith("50 Hz")
     cfg = json.loads((cfgdir / "config.json").read_text())

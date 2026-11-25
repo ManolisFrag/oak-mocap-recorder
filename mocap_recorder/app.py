@@ -14,15 +14,17 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QFont, QFontMetrics, QImage, QKeySequence, QPixmap, QShortcut
+from PySide6.QtGui import QFont, QFontMetrics, QGuiApplication, QImage, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame,
                                QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
                                QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit,
-                               QPushButton, QScrollArea, QSizePolicy, QSlider, QSplitter, QVBoxLayout,
-                               QWidget)
+                               QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QSplitter,
+                               QVBoxLayout, QWidget)
 
 from . import __version__
 from .devices import camera_name, discover_devices, load_config, safe_name, save_config
+from .media import is_video
+from .participant import ParticipantWindow
 from .review import TakeReviewDialog
 from .signlist import PROGRESS_FILE, SignSession, gloss_key
 from .settings import (ANTI_BANDING, CODECS, DEPTH_PRESETS, FPS_OPTIONS, MONO_RESOLUTIONS, RGB_RESOLUTIONS,
@@ -130,6 +132,8 @@ class MainWindow(QMainWindow):
         self.signs: SignSession | None = None   # active sign-list session (None = free mode)
         self._flashing = False
         self._reviewing = False
+        self.participant: ParticipantWindow | None = None   # full-screen window on a second display
+        self._countdown = 0                                # seconds left before recording starts
         self._bridge = _Bridge()
         self._bridge.discovered.connect(self._on_discovered)
 
@@ -150,6 +154,10 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(100, self._startup)
         QShortcut(QKeySequence(Qt.Key_Space), self, activated=self.toggle_recording)
         self.flash_timer = QTimer(self, singleShot=True, timeout=self._end_flash)
+        self.countdown_timer = QTimer(self, interval=1000, timeout=self._countdown_tick)
+        qapp = QGuiApplication.instance()
+        for sig in (qapp.screenAdded, qapp.screenRemoved, qapp.primaryScreenChanged):
+            sig.connect(lambda *_: QTimer.singleShot(500, self._update_screens))
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self):
@@ -233,6 +241,7 @@ class MainWindow(QMainWindow):
         panel = QWidget()
         lay = QVBoxLayout(panel)
         lay.addWidget(self._build_sign_group())
+        lay.addWidget(self._build_participant_group())
 
         g = QGroupBox("Capture settings (all cameras)")
         form = QFormLayout(g)
@@ -394,7 +403,10 @@ class MainWindow(QMainWindow):
             self._update_estimates()
 
     def _style_rec_btn(self):
-        if self.recording:
+        if self._countdown > 0:
+            self.rec_btn.setText(f"✕ Cancel ({self._countdown})")
+            self.rec_btn.setStyleSheet("background:#ff9500; color:white; border-radius:8px;")
+        elif self.recording:
             self.rec_btn.setText("■ Stop recording")
             self.rec_btn.setStyleSheet("background:#ff3b30; color:white; border-radius:8px;")
         else:
@@ -456,6 +468,18 @@ class MainWindow(QMainWindow):
         self.sign_progress = QLabel("No list loaded — free recording mode")
         self.sign_progress.setWordWrap(True)
         v.addWidget(self.sign_progress)
+        self.media_row = QWidget()
+        mr = QHBoxLayout(self.media_row)
+        mr.setContentsMargins(0, 0, 0, 0)
+        self.media_lbl = QLabel("")
+        self.media_lbl.setWordWrap(True)
+        self.media_btn = QPushButton("Media folder…")
+        self.media_btn.setToolTip("Folder with a picture or video per gloss, named after the gloss "
+                                  "(HOUSE.mp4, ΝΕΡΟ.jpg). HOUSE_2 uses HOUSE.* if it has no file of its own.")
+        self.media_btn.clicked.connect(self._choose_media_dir)
+        mr.addWidget(self.media_lbl, 1)
+        mr.addWidget(self.media_btn)
+        v.addWidget(self.media_row)
         self.list_tools = QWidget()
         tools = QHBoxLayout(self.list_tools)
         tools.setContentsMargins(0, 0, 0, 0)
@@ -488,20 +512,137 @@ class MainWindow(QMainWindow):
         add.addWidget(self.add_edit, 1)
         add.addWidget(self.add_btn)
         v.addWidget(self.add_row)
-        for w in (self.list_tools, self.sign_list, self.add_row):
+        for w in (self.list_tools, self.sign_list, self.add_row, self.media_row):
             w.hide()
         return g
+
+    def _build_participant_group(self) -> QWidget:
+        g = QGroupBox("Participant screen")
+        form = QFormLayout(g)
+        self.part_chk = QCheckBox("Show gloss and reference media on the second screen")
+        self.part_chk.setChecked(self.cfg.get("participant_screen", True))
+        self.part_chk.toggled.connect(self._participant_settings_changed)
+        self.part_screen_cb = QComboBox()
+        self.part_screen_cb.currentIndexChanged.connect(self._participant_settings_changed)
+        self.mirror_chk = QCheckBox("Mirror reference media")
+        self.mirror_chk.setChecked(self.cfg.get("mirror_media", False))
+        self.mirror_chk.toggled.connect(self._participant_settings_changed)
+        self.countdown_spin = QSpinBox()
+        self.countdown_spin.setRange(0, 5)
+        self.countdown_spin.setSuffix(" s")
+        self.countdown_spin.setSpecialValueText("off")
+        self.countdown_spin.setValue(int(self.cfg.get("countdown_s", 3)))
+        self.countdown_spin.setToolTip("3-2-1 before every recording; the files start at 'go'. Record/Space cancels.")
+        self.countdown_spin.valueChanged.connect(self._participant_settings_changed)
+        self.part_status = QLabel("")
+        self.part_status.setWordWrap(True)
+        self.part_status.setStyleSheet("color:#888;")
+        form.addRow(self.part_chk)
+        form.addRow("Display", self.part_screen_cb)
+        form.addRow(self.mirror_chk)
+        form.addRow("Countdown", self.countdown_spin)
+        form.addRow(self.part_status)
+        return g
+
+    def _participant_settings_changed(self, *_):
+        self.cfg["participant_screen"] = self.part_chk.isChecked()
+        self.cfg["mirror_media"] = self.mirror_chk.isChecked()
+        self.cfg["countdown_s"] = self.countdown_spin.value()
+        if self.part_screen_cb.count() and self.part_screen_cb.currentIndex() >= 0:
+            self.cfg["participant_display"] = self.part_screen_cb.currentText()
+        self._save_cfg()
+        self._update_screens()
+
+    def _secondary_screens(self) -> list:
+        main = self.screen() or QGuiApplication.primaryScreen()
+        return [sc for sc in QGuiApplication.screens() if sc is not main]
+
+    def _update_screens(self):
+        """Open/move/close the participant window to match the connected displays."""
+        others = self._secondary_screens()
+        names = [sc.name() for sc in others]
+        self.part_screen_cb.blockSignals(True)
+        self.part_screen_cb.clear()
+        self.part_screen_cb.addItems(names)
+        want = self.cfg.get("participant_display")
+        if want in names:
+            self.part_screen_cb.setCurrentIndex(names.index(want))
+        self.part_screen_cb.blockSignals(False)
+        self.part_screen_cb.setEnabled(len(others) > 1)
+        self.part_chk.setEnabled(bool(others))
+        if not others:
+            self.part_status.setText("Connect a second display (set to “extend”, not “mirror”) to show "
+                                     "the gloss and reference media to the signer.")
+            self._close_participant()
+            return
+        if not self.part_chk.isChecked():
+            self.part_status.setText("Off.")
+            self._close_participant()
+            return
+        screen = others[max(self.part_screen_cb.currentIndex(), 0)]
+        if self.participant is None:
+            self.participant = ParticipantWindow()
+            self.log_msg(f"Participant screen on {screen.name()}")
+        win = self.participant
+        win.setScreen(screen)
+        win.setGeometry(screen.geometry())
+        win.showFullScreen()
+        g = screen.geometry()
+        self.part_status.setText(f"Showing on {screen.name()} ({g.width()}×{g.height()}).")
+        self._update_participant()
+
+    def _close_participant(self):
+        if self.participant is not None:
+            self.participant.close()
+            self.participant.deleteLater()
+            self.participant = None
+
+    def _update_participant(self):
+        """Show on the signer's screen whatever matches the current state of the app."""
+        win, sess = self.participant, self.signs
+        if win is None:
+            return
+        i = sess.current if sess is not None and len(sess) else None
+        gloss = sess.name(i) if i is not None else ""
+        progress = f"Sign {i + 1} / {len(sess)}" if i is not None else ""
+        if self._countdown > 0:
+            win.show_countdown(self._countdown, gloss, progress)
+        elif self.recording and not self.stopping:
+            rec_i = (self.session or {}).get("sign_index")
+            win.show_recording(sess.name(rec_i) if sess is not None and rec_i is not None else "",
+                               f"Sign {rec_i + 1} / {len(sess)}" if sess is not None and rec_i is not None else "")
+        elif sess is None:
+            win.show_message("")
+        elif self._reviewing or self.stopping:
+            win.show_wait(gloss, progress)
+        elif sess.complete:
+            win.show_message("✓ Thank you!", f"{len(sess)} / {len(sess)}")
+        else:
+            win.show_sign(gloss, progress, sess.media_for(i), self.mirror_chk.isChecked())
+
+    def _choose_media_dir(self):
+        sess = self.signs
+        if sess is None:
+            return
+        start = str(sess.media_dir or Path(sess.data.get("list_source", str(Path.home()))).parent)
+        d = QFileDialog.getExistingDirectory(self, "Folder with reference pictures / videos", start)
+        if not d:
+            return
+        sess.set_media_dir(Path(d))
+        self.log_msg(f"Media folder {d}: found media for {sess.n_with_media} of {len(sess)} glosses")
+        self._refresh_sign_ui()
 
     def _refresh_sign_ui(self):
         sess = self.signs
         sign_mode = sess is not None
-        for w in (self.list_tools, self.sign_list, self.add_row):
+        for w in (self.list_tools, self.sign_list, self.add_row, self.media_row):
             w.setVisible(sign_mode)
         self.clear_list_btn.setEnabled(sign_mode)
         self.banner.setVisible(sign_mode)
         self.trial_lbl.setText("Participant:" if sign_mode else "Trial:")
         self.trial_edit.setReadOnly(sign_mode)
         if not sign_mode:
+            self._update_participant()
             self.filter_edit.clear()
             self.sign_progress.setText("No list loaded — free recording mode")
             self.trial_edit.setText(self.cfg.get("trial", ""))
@@ -515,7 +656,9 @@ class MainWindow(QMainWindow):
             accepted = sess.status(i) == "accepted"
             current = i == sess.current and not sess.complete
             mark = "▶" if current else ("✓" if accepted else "·")
-            item = QListWidgetItem(f"{mark}  {i + 1:>3}  {name}")
+            m = sess.media_for(i)
+            media_mark = ("  🎬" if is_video(m) else "  🖼") if m is not None else ""
+            item = QListWidgetItem(f"{mark}  {i + 1:>3}  {name}{media_mark}")
             item.setData(Qt.UserRole, i)
             if sess.data["signs"][i].get("added"):
                 item.setToolTip("Added during the session")
@@ -532,8 +675,17 @@ class MainWindow(QMainWindow):
                                 "or double-click a sign to re-record it")
         else:
             redo = " <span style='color:#ff9500'>(re-record)</span>" if sess.status(sess.current) == "accepted" else ""
+            m = sess.media_for(sess.current)
+            media = (f"&nbsp;&nbsp;<span style='color:#999; font-size:16px'>{'🎬' if is_video(m) else '🖼'} "
+                     f"{m.name}</span>") if m is not None else ""
             self.banner.setText(f"<span style='color:#999; font-size:18px'>Sign {sess.current + 1} / "
-                                f"{len(sess)}</span>&nbsp;&nbsp;{sess.name(sess.current)}{redo}")
+                                f"{len(sess)}</span>&nbsp;&nbsp;{sess.name(sess.current)}{redo}{media}")
+        if sess.media_dir:
+            self.media_lbl.setText(f"<span style='color:#888'>Media: {sess.n_with_media} / {len(sess)} glosses "
+                                   f"({sess.media_dir.name}/)</span>")
+        else:
+            self.media_lbl.setText("<span style='color:#888'>No media folder — gloss text only</span>")
+        self._update_participant()
 
     def eventFilter(self, obj, ev):
         if obj is self.stage and ev.type() == QEvent.Resize:
@@ -578,17 +730,17 @@ class MainWindow(QMainWindow):
         self._update_rec_enabled()
 
     def _update_rec_enabled(self):
-        busy = self._flashing or self._reviewing or self.stopping or self._restart_pending \
-            or not self.cameras_on
+        busy = (self._flashing or self._reviewing or self.stopping or self._restart_pending
+                or not self.cameras_on) and self._countdown == 0
         complete = self.signs is not None and self.signs.complete and not self.recording
         self.rec_btn.setEnabled(not busy and not complete)
-        idle = not (self.recording or self.stopping or self._reviewing)
+        idle = not (self.recording or self.stopping or self._reviewing or self._countdown)
         self.cams_btn.setEnabled(idle)
         for b in (self.load_list_btn, self.open_sess_btn):
             b.setEnabled(idle)
         self.clear_list_btn.setEnabled(idle and self.signs is not None)
         self.sign_list.setEnabled(idle)
-        for w in (self.refresh_btn, self.add_edit, self.add_btn):
+        for w in (self.refresh_btn, self.add_edit, self.add_btn, self.media_btn):
             w.setEnabled(idle and self.signs is not None)
 
     def _set_sign_session(self, sess: SignSession | None):
@@ -799,6 +951,7 @@ class MainWindow(QMainWindow):
         dlg.finished.connect(lambda result: self._review_done(result, s))
         self._reviewing = True
         self._update_rec_enabled()
+        self._update_participant()
         dlg.open()
 
     def _remember_review_camera(self, name: str):
@@ -833,6 +986,7 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ devices
     def _startup(self):
+        self._update_screens()
         self._offer_recommended_settings()
         self._started = True
         self._discover()
@@ -1085,40 +1239,97 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ recording
     def toggle_recording(self):
+        if self._countdown > 0:
+            self._cancel_countdown()
+            return
         if self.stopping or (not self.recording and not self.rec_btn.isEnabled()):
             return
         if self.recording:
             self.stop_recording()
-        else:
-            self.start_recording()
+        elif self._preflight():
+            n = self.countdown_spin.value()
+            if n <= 0:
+                self._start_now()
+            else:
+                self._countdown = n
+                self._show_countdown()
+                self.countdown_timer.start()
+
+    def _show_countdown(self):
+        self.flash_timer.stop()
+        self._flashing = False
+        gloss = self.signs.name(self.signs.current) if self.signs is not None and len(self.signs) else ""
+        self._flash_text(str(self._countdown), gloss or "Recording starts…", ms=60_000)
+        self._flashing = False
+        self._style_rec_btn()
+        self._update_rec_enabled()
+        self._update_participant()
+
+    def _countdown_tick(self):
+        self._countdown -= 1
+        if self._countdown > 0:
+            self._show_countdown()
+            return
+        self.countdown_timer.stop()
+        self.flash.hide()
+        self.flash_timer.stop()
+        self._start_now()
+        if not self.recording:          # could not start (e.g. cameras dropped during the countdown)
+            self._style_rec_btn()
+            self._update_rec_enabled()
+            self._update_participant()
+
+    def _cancel_countdown(self):
+        self.countdown_timer.stop()
+        self._countdown = 0
+        self.flash.hide()
+        self.flash_timer.stop()
+        self._style_rec_btn()
+        self._update_rec_enabled()
+        self._update_participant()
+        self.log_msg("Countdown cancelled")
 
     def start_recording(self):
+        """Start immediately (no countdown)."""
+        if self._preflight():
+            self._start_now()
+
+    def _preflight(self) -> bool:
+        """Checks and confirmations before a recording; False = don't record."""
         online = {d: w for d, w in self.workers.items() if w["online"]}
         if not online:
             QMessageBox.warning(self, "No cameras", "No camera is streaming yet.")
-            return
+            return False
         if self.apply_btn.isEnabled():
             if QMessageBox.question(self, "Unapplied settings",
                                     "Settings were changed but not applied. Record with the current "
                                     "(applied) settings?") != QMessageBox.Yes:
-                return
-        sign_mode = self.signs is not None
-        root = self.signs.dir if sign_mode else Path(self.folder_edit.text()).expanduser()
+                return False
+        root = self.signs.dir if self.signs is not None else Path(self.folder_edit.text()).expanduser()
         try:
             root.mkdir(parents=True, exist_ok=True)
             probe = root / ".write_test"
             probe.write_text("ok"); probe.unlink()
         except Exception as e:
             QMessageBox.critical(self, "Folder not writable", f"{root}\n{e}")
-            return
+            return False
         self._update_estimates()
         if getattr(self, "_free_minutes", 0) < 5:
             if QMessageBox.question(self, "Low disk space",
                                     f"Only ~{self._free_minutes:.0f} min of recording fit on this disk. Continue?"
                                     ) != QMessageBox.Yes:
-                return
+                return False
+        return True
+
+    def _start_now(self):
+        online = {d: w for d, w in self.workers.items() if w["online"]}
+        if not online:
+            self.log_msg("No camera is streaming — recording not started", "error")
+            return
         if len(online) < len(self.workers):
             self.log_msg(f"Recording with {len(online)} of {len(self.workers)} cameras online", "warn")
+        sign_mode = self.signs is not None
+        root = self.signs.dir if sign_mode else Path(self.folder_edit.text()).expanduser()
 
         if sign_mode:
             idx = self.signs.current
@@ -1138,8 +1349,10 @@ class MainWindow(QMainWindow):
             "depthai_version": dai.__version__, "app_version": __version__,
         }
         if sign_mode:
+            m = self.signs.media_for(idx)
             self.session.update({"sign": self.signs.name(idx), "sign_index": idx,
-                                 "participant": self.signs.participant, "trial": self.signs.participant})
+                                 "participant": self.signs.participant, "trial": self.signs.participant,
+                                 "reference_media": str(m) if m is not None else None})
         for did, w in self.workers.items():
             cmd = {"session_dir": str(sdir), "start_us": start_us, "cam_name": w["name"]}
             if sign_mode:
@@ -1153,6 +1366,7 @@ class MainWindow(QMainWindow):
         self._save_cfg()
         self._write_session_json()
         self._update_rec_enabled()
+        self._update_participant()
         self.log_msg(f"Recording → {sdir}" + (f"  [sign: {self.session['sign']}]" if sign_mode else ""))
 
     def stop_recording(self):
@@ -1165,6 +1379,7 @@ class MainWindow(QMainWindow):
         for w in self.workers.values():
             w["cmd_q"].put(("stop", {"stop_us": stop_us}))
         self.stopping = True
+        self._update_participant()
         self.rec_btn.setText("Finishing files…")
         self.rec_btn.setEnabled(False)
 
@@ -1189,6 +1404,8 @@ class MainWindow(QMainWindow):
         self._update_rec_enabled()
         if "sign_index" in s and self.signs is not None:
             self._review_take(s)
+        else:
+            self._update_participant()
 
     def _write_session_json(self):
         s = dict(self.session)
@@ -1227,6 +1444,8 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ shutdown
     def closeEvent(self, e):
+        if self._countdown:
+            self._cancel_countdown()
         if self._reviewing:
             if QMessageBox.question(self, "Take not reviewed",
                                     "A take is waiting for Accept / Discard. Quit anyway? "
@@ -1254,6 +1473,7 @@ class MainWindow(QMainWindow):
             time.sleep(0.05)
         for w in self._closing.values():
             w["proc"].kill()
+        self._close_participant()
         e.accept()
 
 

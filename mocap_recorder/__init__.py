@@ -1,2 +1,2 @@
 """OAK-D multi-camera recorder for markerless motion capture."""
-__version__ = "0.3.0"
+__version__ = "0.4.0"

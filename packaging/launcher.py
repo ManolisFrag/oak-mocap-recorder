@@ -22,6 +22,15 @@ def selftest():
         except Exception:
             pass
     cmd.put(("quit", None)); p.join(10)
+    # reference pictures for the participant screen need Qt's image-format plugins in the bundle
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtGui import QGuiApplication, QImageReader
+    _app = QGuiApplication.instance() or QGuiApplication([])
+    fmts = {bytes(f).decode() for f in QImageReader.supportedImageFormats()}
+    missing = {"jpg", "png", "gif", "webp", "bmp"} - fmts
+    print("image formats:", "all present" if not missing else f"MISSING {sorted(missing)}")
+    ok = ok and not missing
     import av, depthai
     print("depthai", depthai.__version__, "av", av.__version__, "SELFTEST", "OK" if ok else "FAILED")
     sys.exit(0 if ok else 1)

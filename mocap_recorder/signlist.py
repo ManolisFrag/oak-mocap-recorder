@@ -17,6 +17,8 @@ import unicodedata
 from datetime import datetime
 from pathlib import Path
 
+from .media import find_media, index_media
+
 PROGRESS_FILE = "progress.json"
 PENDING_DIR = "_pending"
 DISCARDED_DIR = "_discarded"
@@ -88,6 +90,8 @@ class SignSession:
     def __init__(self, directory: Path, data: dict):
         self.dir = Path(directory)
         self.data = data
+        self._media: dict[str, Path] = {}
+        self.rescan_media()
 
     # ---- construction -----------------------------------------------------
     @classmethod
@@ -106,6 +110,9 @@ class SignSession:
             "participant": participant.strip(),
             "created": datetime.now().isoformat(timespec="seconds"),
             "list_source": str(list_path),
+            # reference pictures/videos: a "media" folder next to the list is picked up automatically
+            "media_dir": str(Path(list_path).parent / "media") if (Path(list_path).parent / "media").is_dir()
+            else None,
             "current": 0,
             "signs": [{"name": s, "folder": f"{i + 1:0{width}d}_{safe_filename(s)}",
                        "status": "pending", "attempts": 0, "accepted_at": None}
@@ -186,6 +193,27 @@ class SignSession:
         return None
 
     # ---- take handling ----------------------------------------------------
+    # ---- reference media ------------------------------------------------------
+    @property
+    def media_dir(self) -> Path | None:
+        d = self.data.get("media_dir")
+        return Path(d) if d else None
+
+    def set_media_dir(self, folder: Path | None):
+        self.data["media_dir"] = str(folder) if folder else None
+        self.save()
+        self.rescan_media()
+
+    def rescan_media(self):
+        self._media = index_media(self.media_dir)
+
+    def media_for(self, i: int) -> Path | None:
+        return find_media(self._media, self.name(i)) if self._media else None
+
+    @property
+    def n_with_media(self) -> int:
+        return sum(1 for i in range(len(self)) if self.media_for(i) is not None)
+
     # ---- editing the list ---------------------------------------------------
     def find(self, name: str) -> int | None:
         """Index of a gloss, ignoring case only (accents can distinguish glosses)."""
@@ -243,6 +271,7 @@ class SignSession:
         marked:   folder present but not marked recorded (e.g. restored from _discarded)
         added:    new lines found in signs.txt (appended at the end)"""
         report = {"unmarked": [], "removed": [], "marked": [], "added": []}
+        self.rescan_media()
         cur_folder = self.folder(self.current) if len(self) else None
         txt = self._signs_txt_lines()
         keep = []

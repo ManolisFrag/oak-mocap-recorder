@@ -71,6 +71,21 @@ it is close to the limits of a shared hub or a smaller MacBook; the panel warns 
    A take that was waiting for review is moved to `_discarded/`.
 10. **Clear list** ends the session (all files are kept) and returns to free recording.
 
+### Participant screen (second display)
+Connect a second display set to **extend** the desktop (not mirror). In **Participant screen**, tick "Show gloss and
+reference media on the second screen". The signer then sees:
+* **before recording:** the gloss, progress (Sign 12 / 120) and its reference picture or looping video (muted)
+* **countdown:** 3, 2, 1. The files start at "go", and Record/Space during the countdown cancels.
+  The countdown length (0–5 s, 0 = off) applies to every recording, with or without a second screen.
+* **while recording:** the gloss and a red ● REC only. The reference media is hidden so the signer looks at the cameras.
+* **during review:** "Please wait…". Accept moves on to the next sign; Discard shows the same sign again.
+
+**Reference media:** put one picture or video per gloss in a folder, named after the gloss: `HOUSE.mp4`, `ΝΕΡΟ.jpg`
+(case is ignored). A folder called `media` next to the list .txt is used automatically; otherwise use **Media folder…**.
+`HOUSE_2` uses `HOUSE.*` when it has no file of its own, and a video is preferred over a picture with the same name.
+Glosses with media are marked 🎬/🖼 in the list. Each take's `take.json` records which file was shown.
+Formats: jpg, png, gif, webp, bmp, mp4, mov, m4v, avi, mkv, webm. "Mirror reference media" flips the picture/video.
+
 ```
 <participant>_<date_time>/
   signs.txt  progress.json
@@ -138,6 +153,7 @@ Note: rgb.mp4 and depth.mkv start at different frames (because of the pre-roll),
 .venv/bin/python tests/test_restart_nofreeze.py # Apply / cameras on-off never block the window
 .venv/bin/python tests/test_settings_defaults.py # recommended defaults, warnings, one-time prompt
 .venv/bin/python tests/test_view_depth.py       # depth preview colours
+.venv/bin/python tests/test_media.py            # media matching, looping video, participant screen states
 "dist/OAK Mocap Recorder.app/Contents/MacOS/OAK Mocap Recorder" --selftest
 ```
 
